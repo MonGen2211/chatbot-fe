@@ -1,5 +1,26 @@
 # React + TypeScript + Vite
 
+Reusable notifications: mount `ToastNotifications` once (already included in `main.tsx`) and import `toast` from `src/components/toast`. The second argument is the lifetime in milliseconds, defaulting to 4000:
+
+```ts
+import { toast } from "./components/toast";
+
+toast.success("Saved successfully", 3000);
+toast.warning("Please check your input", 5000);
+toast.info("Check your confirmation email", 7000);
+toast.error("Something went wrong", 5000);
+```
+
+Authentication uses `http://localhost:3001` by default. Set `VITE_API_URL` in `.env.local` to change it, then restart Vite.
+
+- `src/api/client.ts`: shared Axios client, base URL, Bearer header, and API error formatting.
+- `src/features/auth/authService.ts`: calls login/register and maps `data.session.access_token`.
+- `src/features/auth/authSlice.ts`: manages session, loading, errors, and email confirmation feedback.
+- `src/features/auth/useAuth.ts`: exposes auth state and actions to components.
+- `src/features/auth/authStorage.ts`: preserves the session in this browser tab; logout clears it.
+
+Components call `useAuth().submit("login" | "register", { email, password })`. Registration without a session shows the email confirmation message; registration with a session signs the user in. Passwords are never persisted. There is no refresh endpoint in this integration; sign in again when the token expires.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:
