@@ -3,7 +3,7 @@ import { ChatSidebar } from "./ChatSidebar";
 import { ChatHeader } from "./ChatHeader";
 import { ChatContent } from "./ChatContent";
 import { SettingsDialog } from "../../settings/components/SettingsDialog";
-import type { User } from "../../auth/types";
+import { useAuth } from "../../auth/useAuth";
 import { LoginDialog } from "../../auth/components/LoginDialog";
 import { useAppDispatch, useAppSelector } from "../../../store/hooks";
 import {
@@ -17,7 +17,7 @@ export function ChatLayout() {
   const { conversations, activeId } = useAppSelector((state) => state.chat);
   const activeConversation = conversations.find((item) => item.id === activeId);
 
-  const [user, setUser] = useState<User | null>(null);
+  const { user, logout, clearFeedback } = useAuth();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [loginOpen, setLoginOpen] = useState(false);
 
@@ -45,8 +45,8 @@ export function ChatLayout() {
           onSelect={(id) => dispatch(selectConversation(id))}
           onNewChat={handleNewChat}
           onOpenSettings={() => setSettingsOpen(true)}
-          onOpenLogin={() => setLoginOpen(true)}
-          onLogout={() => setUser(null)}
+          onOpenLogin={() => { clearFeedback(); setLoginOpen(true); }}
+          onLogout={logout}
         />
 
         <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#0f1520]">
@@ -59,14 +59,10 @@ export function ChatLayout() {
       </div>
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
-      <LoginDialog
+      {loginOpen && <LoginDialog
         open={loginOpen}
         onClose={() => setLoginOpen(false)}
-        onLogin={(loggedInUser) => {
-          setUser(loggedInUser);
-          setLoginOpen(false);
-        }}
-      />
+      />}
     </div>
   );
 }
