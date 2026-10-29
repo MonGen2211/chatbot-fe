@@ -6,5 +6,4 @@ export interface Conversation {
   messages: Message[];
   createdAt: string;
   updatedAt: string;
-	lastInteractionId?: string;
 }

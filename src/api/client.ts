@@ -13,6 +13,17 @@ export function setAccessToken(token: string | null) {
   else delete apiClient.defaults.headers.common.Authorization;
 }
 
+let unauthorizedHandler: (() => void) | undefined;
+export function setUnauthorizedHandler(handler: () => void) { unauthorizedHandler = handler; }
+export function handleUnauthorized() { unauthorizedHandler?.(); }
+
+apiClient.interceptors.response.use((response) => response, (error) => {
+  if (axios.isAxiosError(error) && error.response?.status === 401 && !error.config?.url?.startsWith("/auth/")) {
+    handleUnauthorized();
+  }
+  return Promise.reject(error);
+});
+
 export function getApiError(error: unknown): string {
   if (axios.isAxiosError<{ message?: string }>(error)) {
     return error.response?.data?.message || "Không kết nối được máy chủ. Vui lòng thử lại.";

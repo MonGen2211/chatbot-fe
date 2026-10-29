@@ -2,7 +2,9 @@ import { configureStore } from "@reduxjs/toolkit";
 import chatReducer from "../features/chat/chatSlice";
 import authReducer from "../features/auth/authSlice";
 import { saveSession } from "../features/auth/authStorage";
-import { setAccessToken } from "../api/client";
+import { setAccessToken, setUnauthorizedHandler } from "../api/client";
+import { logout } from "../features/auth/authSlice";
+import { toast } from "../components/toast";
 
 export const store = configureStore({
   reducer: {
@@ -13,6 +15,11 @@ export const store = configureStore({
 
 let previousSession = store.getState().auth.session;
 setAccessToken(previousSession?.accessToken ?? null);
+setUnauthorizedHandler(() => {
+  if (!store.getState().auth.session) return;
+  store.dispatch(logout());
+  toast.warning("Phiên đăng nhập hết hạn. Vui lòng đăng nhập lại.", 5000);
+});
 store.subscribe(() => {
   const session = store.getState().auth.session;
   if (session !== previousSession) {

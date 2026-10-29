@@ -6,6 +6,7 @@ import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import {
   Avatar,
   Button,
+  CircularProgress,
   IconButton,
   List,
   ListItemButton,
@@ -28,6 +29,12 @@ interface ChatSidebarProps {
   onOpenSettings: () => void;
   onOpenLogin: () => void;
   onLogout: () => void;
+  busy: boolean;
+  loading: boolean;
+  hasMore: boolean;
+  error: string | null;
+  onLoadMore: () => void;
+  onReload: () => void;
 }
 
 export function ChatSidebar({
@@ -39,9 +46,10 @@ export function ChatSidebar({
   onOpenSettings,
   onOpenLogin,
   onLogout,
+  busy, loading, hasMore, error, onLoadMore, onReload,
 }: ChatSidebarProps) {
   return (
-    <aside className="hidden w-280px shrink-0 flex-col bg-[#18202c] p-4 text-slate-200 md:flex dark:border-r dark:border-white/5 dark:bg-[#0b111a]">
+    <aside className="hidden w-[280px] shrink-0 flex-col bg-[#18202c] p-4 text-slate-200 md:flex dark:border-r dark:border-white/5 dark:bg-[#0b111a]">
       <div className="mb-5 flex items-center gap-2 px-1 pt-1">
         <SmartToyOutlinedIcon fontSize="small" />
         <span className="text-[17px] font-semibold text-white">AI Chat</span>
@@ -53,6 +61,7 @@ export function ChatSidebar({
         disableElevation
         startIcon={<AddIcon fontSize="small" />}
         onClick={onNewChat}
+        disabled={busy || !user}
         className="rounded-lg py-2 text-sm"
       >
         New Chat
@@ -60,6 +69,7 @@ export function ChatSidebar({
 
       <p className="mt-5 mb-2 px-1 text-xs text-slate-400">Recent Chats</p>
 
+      <div className="min-h-0 flex-1 overflow-y-auto">
       <List disablePadding className="flex flex-col gap-0.5">
         {chats.map((chat) => {
           const active = chat.id === activeId;
@@ -68,6 +78,7 @@ export function ChatSidebar({
               key={chat.id}
               selected={active}
               onClick={() => onSelect(chat.id)}
+              disabled={busy}
               className={`rounded-lg px-2.5 py-2 ${
                 active
                   ? "bg-[#2d394b] text-white"
@@ -82,6 +93,11 @@ export function ChatSidebar({
           );
         })}
       </List>
+      {loading && <div className="flex justify-center py-3"><CircularProgress size={20} aria-label="Đang tải danh sách" /></div>}
+      {error && <div role="alert" className="px-1 py-2 text-xs text-red-300">{error}<Button size="small" onClick={onReload} disabled={busy || loading}>Thử lại</Button></div>}
+      {hasMore && !error && <Button fullWidth onClick={onLoadMore} disabled={loading || busy}>Tải thêm</Button>}
+      {!loading && !error && user && !chats.length && <p className="px-1 text-xs text-slate-400">Chưa có cuộc trò chuyện.</p>}
+      </div>
 
       {/* Footer: Settings + Login / User */}
       <div className="mt-auto flex flex-col gap-2 border-t border-white/10 pt-3">
