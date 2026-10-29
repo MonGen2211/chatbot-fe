@@ -1,13 +1,18 @@
 import type { AuthSession } from "./types";
 
-const SESSION_KEY = "ai-chat-session";
+// A new key prevents reusing sessions from the previous Supabase integration.
+const SESSION_KEY = "ai-chat-backend-session-v1";
 
 export function readSession(): AuthSession | null {
   try {
+    sessionStorage.removeItem("ai-chat-session");
     const session = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
-    return typeof session?.accessToken === "string" &&
-      typeof session?.user?.email === "string" && typeof session?.user?.name === "string"
-      ? session : null;
+    const valid = typeof session?.accessToken === "string" &&
+      typeof session?.user?.id === "string" &&
+      typeof session?.expiresAt === "number" && session.expiresAt * 1000 > Date.now() &&
+      typeof session?.user?.email === "string" && typeof session?.user?.name === "string";
+    if (!valid) sessionStorage.removeItem(SESSION_KEY);
+    return valid ? session : null;
   } catch { return null; }
 }
 

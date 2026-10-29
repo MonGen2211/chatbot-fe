@@ -1,9 +1,13 @@
 export interface User {
+  id: string;
   name: string;
   email: string;
 }
 export interface AuthSession {
   accessToken: string;
+  tokenType: string;
+  expiresIn: number;
+  expiresAt: number;
   user: User;
 }
 

@@ -15,11 +15,22 @@ Authentication uses `http://localhost:3001` by default. Set `VITE_API_URL` in `.
 
 - `src/api/client.ts`: shared Axios client, base URL, Bearer header, and API error formatting.
 - `src/features/auth/authService.ts`: calls login/register and maps `data.session.access_token`.
-- `src/features/auth/authSlice.ts`: manages session, loading, errors, and email confirmation feedback.
+- `src/features/auth/authSlice.ts`: manages session, loading, and errors.
 - `src/features/auth/useAuth.ts`: exposes auth state and actions to components.
 - `src/features/auth/authStorage.ts`: preserves the session in this browser tab; logout clears it.
 
-Components call `useAuth().submit("login" | "register", { email, password })`. Registration without a session shows the email confirmation message; registration with a session signs the user in. Passwords are never persisted. There is no refresh endpoint in this integration; sign in again when the token expires.
+Components call `useAuth().submit("login" | "register", { email, password })`. Both routes sign the user in immediately using the backend JWT. Registration accepts passwords of at least 8 characters and at most 72 UTF-8 bytes. The session includes the backend user ID and token expiration. Old Supabase sessions are discarded; logout, expiration, or a protected API returning 401 clears the session and chat state. Passwords are never persisted. There is no refresh/logout endpoint.
+
+Chat integration:
+
+- `src/features/chat/chatService.ts`: Axios for conversation/message GET requests; `fetch`, `TextDecoder`, and a frame buffer for POST SSE. All routes share the base URL in `src/api/client.ts`.
+- `src/features/chat/chatSlice.ts`: list pagination, cached history, optimistic messages, backend IDs, stream updates, and interrupted replies.
+- `src/features/chat/useChat.ts`: loads data, tracks session expiration, and connects the Stop button to an `AbortController`.
+- The sidebar loads 50 conversations at a time with a Load more button. Opening a conversation automatically reads all history pages (50 messages per request) in oldest-to-newest order before enabling the composer.
+- New Chat sends only `{ message }`. The server's `conversation` event supplies the real ID for subsequent requests. `done` replaces the temporary assistant message with its saved version. Partial replies remain marked as interrupted after an error, disconnect, or Stop. Requests are never retried automatically.
+- Set backend `CORS_ORIGIN` if the frontend runs anywhere other than `http://localhost:5173`. Gemini credentials stay on the backend.
+
+Run `npm test` for mocked API/SSE integration checks, `npm run lint`, and `npm run build`. Tests never contact Gemini or write to the backend database.
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 

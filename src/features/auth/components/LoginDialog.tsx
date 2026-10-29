@@ -35,6 +35,10 @@ export function LoginDialog({ open, onClose }: LoginDialogProps) {
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
     if (loading) return;
+    if (isRegister && new TextEncoder().encode(password).length > 72) {
+      toast.warning("Mật khẩu tối đa 72 byte UTF-8.");
+      return;
+    }
     try {
       const result = await submit(mode, { email: email.trim(), password });
       setPassword("");
@@ -42,9 +46,6 @@ export function LoginDialog({ open, onClose }: LoginDialogProps) {
       if (result.session) {
         toast.success(isRegister ? "Đăng ký thành công!" : "Đăng nhập thành công!", 3000);
         onClose();
-      } else {
-        toast.info(result.message || "Vui lòng kiểm tra email xác nhận rồi đăng nhập.", 7000);
-        setMode("login");
       }
     } catch (error) {
       toast.error(typeof error === "string" ? error : "Có lỗi xảy ra. Vui lòng thử lại.", 5000);

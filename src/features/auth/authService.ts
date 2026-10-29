@@ -2,33 +2,27 @@ import { apiClient } from "../../api/client";
 import type { AuthCredentials, AuthSession } from "./types";
 
 interface AuthResponse {
-  message?: string;
   data: {
-    user?: { email?: string } | null;
-    session: { access_token: string } | null;
+    user: { id: string; email: string };
+    session: { access_token: string; token_type: string; expires_in: number; expires_at: number };
   };
 }
 
-function toSession(response: AuthResponse, email: string): AuthSession | null {
-  const token = response.data.session?.access_token;
-  if (!token) return null;
-  const userEmail = response.data.user?.email || email;
-  return { accessToken: token, user: { email: userEmail, name: userEmail.split("@")[0] || "User" } };
+async function authenticate(mode: "login" | "register", credentials: AuthCredentials) {
+  const { data: response } = await apiClient.post<AuthResponse>(`/auth/${mode}`, credentials);
+  const { user, session } = response.data;
+  if (!session?.access_token || !user?.id || !session.expires_at) {
+    throw new Error("Không nhận được phiên đăng nhập hợp lệ.");
+  }
+  const result: AuthSession = {
+    accessToken: session.access_token, tokenType: session.token_type,
+    expiresIn: session.expires_in, expiresAt: session.expires_at,
+    user: { id: user.id, email: user.email, name: user.email.split("@")[0] || "User" },
+  };
+  return { session: result, message: null };
 }
 
 export const authService = {
-  async login(credentials: AuthCredentials) {
-    const { data } = await apiClient.post<AuthResponse>("/auth/login", credentials);
-    const session = toSession(data, credentials.email);
-    if (!session) throw new Error("Không nhận được token đăng nhập.");
-    return { session, message: null };
-  },
-  async register(credentials: AuthCredentials) {
-    const { data } = await apiClient.post<AuthResponse>("/auth/register", credentials);
-    const session = toSession(data, credentials.email);
-    return {
-      session,
-      message: session ? null : (data.message || "Vui lòng kiểm tra email xác nhận rồi đăng nhập."),
-    };
-  },
+  login: (credentials: AuthCredentials) => authenticate("login", credentials),
+  register: (credentials: AuthCredentials) => authenticate("register", credentials),
 };
