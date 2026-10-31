@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { useAppDispatch, useAppSelector } from "../../store/hooks";
 import { toast } from "../../components/toast";
 import { handleUnauthorized } from "../../api/client";
-import { clearActiveConversation, loadConversations, loadMessages, selectConversation, sendChatMessage } from "./chatSlice";
+import { clearActiveConversation, editMessageLocally, loadConversations, loadMessages, selectConversation, sendChatMessage } from "./chatSlice";
 
 export function useChat() {
   const dispatch = useAppDispatch();
@@ -37,6 +37,7 @@ export function useChat() {
     reload: () => dispatch(loadConversations(0)),
     retryHistory: () => { if (state.activeId) void dispatch(loadMessages(state.activeId)); },
     stop: () => controller.current?.abort(),
+    editMessage: (messageId: string, content: string) => dispatch(editMessageLocally({ conversationId: state.activeId, messageId, content })),
     send: async (message: string) => {
       if (!session || state.stream || controller.current) return false;
       if (session.expiresAt * 1000 <= Date.now()) { handleUnauthorized(); return false; }

@@ -41,7 +41,7 @@ export const chatService = {
   },
   async messages(id: string, offset: number, signal: AbortSignal) {
     const { data: { data } } = await apiClient.get<{ data: { messages: ApiMessage[]; pagination: Pagination } }>(
-      `/conversations/${encodeURIComponent(id)}/messages`, { params: { limit: PAGE_SIZE, offset }, signal },
+      "/messages", { params: { conversation_id: id, limit: PAGE_SIZE, offset }, signal },
     );
     return { messages: data.messages.map(toMessage), pagination: data.pagination };
   },
@@ -53,7 +53,7 @@ export type ChatEvent =
   | { event: "done"; data: { conversation_id: string; message: ApiMessage } };
 
 export async function streamMessage(token: string, message: string, conversationId: string | null, onEvent: (event: ChatEvent) => void, signal: AbortSignal) {
-  const response = await fetch(`${API_URL.replace(/\/$/, "")}/api/conversations/send-messages`, {
+  const response = await fetch(`${API_URL.replace(/\/$/, "")}/api/chat`, {
     method: "POST", signal,
     headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: `Bearer ${token}` },
     body: JSON.stringify({ message, ...(conversationId && { conversation_id: conversationId }) }),

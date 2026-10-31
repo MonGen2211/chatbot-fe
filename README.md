@@ -23,6 +23,8 @@ Components call `useAuth().submit("login" | "register", { email, password })`. B
 
 Chat integration:
 
+- API contract: `GET /api/conversations?limit=50&offset=0`, `GET /api/messages?conversation_id=<UUID>&limit=50&offset=0`, and `POST /api/chat` (SSE). FE uses these canonical routes rather than the legacy conversation subroutes.
+
 - `src/features/chat/chatService.ts`: Axios for conversation/message GET requests; `fetch`, `TextDecoder`, and a frame buffer for POST SSE. All routes share the base URL in `src/api/client.ts`.
 - `src/features/chat/chatSlice.ts`: list pagination, cached history, optimistic messages, backend IDs, stream updates, and interrupted replies.
 - `src/features/chat/useChat.ts`: loads data, tracks session expiration, and connects the Stop button to an `AbortController`.
