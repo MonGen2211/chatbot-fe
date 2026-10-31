@@ -4,6 +4,7 @@ import StopRoundedIcon from "@mui/icons-material/StopRounded";
 import SmartToyOutlinedIcon from "@mui/icons-material/SmartToyOutlined";
 import { Button, CircularProgress, IconButton, InputBase } from "@mui/material";
 import type { useChat } from "../useChat";
+import { ChatMessage } from "./ChatMessage";
 
 interface ChatContentProps {
   chat: ReturnType<typeof useChat>;
@@ -48,16 +49,7 @@ export function ChatContent({ chat, signedIn, onLogin }: ChatContentProps) {
           </div>
         )}
         {chat.messages.length ? chat.messages.map((item) => (
-          <div key={item.id} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[85%] rounded-2xl px-4 py-3 text-sm leading-6 ${item.role === "user" ? "bg-blue-600 text-white" : "bg-slate-100 text-slate-900 dark:bg-[#1b2635] dark:text-slate-100"}`}>
-              <p className="m-0 whitespace-pre-wrap wrap-break-word">
-                {item.content || (item.status === "streaming" ? "" : "Chưa nhận được câu trả lời.")}
-              </p>
-              {item.status === "streaming" && <CircularProgress size={13} className="mt-1" aria-label="Đang trả lời" />}
-              {item.status === "interrupted" && <p className="mt-2 mb-0 text-xs text-amber-600 dark:text-amber-400">Câu trả lời bị gián đoạn, chưa được lưu hoàn tất.</p>}
-              {item.status === "failed" && <p className="mt-2 mb-0 text-xs text-blue-100">Chưa xác nhận tin nhắn đã được lưu.</p>}
-            </div>
-          </div>
+          <ChatMessage key={item.id} message={item} busy={chat.isSending} onEdit={chat.editMessage} />
         )) : !chat.historyState?.loading && !chat.historyState?.error && (
           <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
             <SmartToyOutlinedIcon className="mb-3 text-4xl text-blue-600 dark:text-blue-400" />

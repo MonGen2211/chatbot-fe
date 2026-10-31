@@ -77,6 +77,16 @@ function sortConversations(state: ChatState) {
 const chatSlice = createSlice({
   name: "chat", initialState,
   reducers: {
+    editMessageLocally(state, { payload }: PayloadAction<{ conversationId: string | null; messageId: string; content: string }>) {
+      if (state.stream || state.activeId !== payload.conversationId) return;
+      const content = payload.content.trim();
+      if (!content || content.length > 12000) return;
+      const messages = payload.conversationId
+        ? state.conversations.find((item) => item.id === payload.conversationId)?.messages
+        : state.draft;
+      const message = messages?.find((item) => item.id === payload.messageId && item.role === "user");
+      if (message) message.content = content;
+    },
     clearActiveConversation(state) {
       if (state.stream) return;
       state.activeId = null; state.draft = []; state.sendError = null;
@@ -187,5 +197,5 @@ const chatSlice = createSlice({
   },
 });
 
-export const { clearActiveConversation, selectConversation, receiveStreamEvent } = chatSlice.actions;
+export const { clearActiveConversation, selectConversation, receiveStreamEvent, editMessageLocally } = chatSlice.actions;
 export default chatSlice.reducer;

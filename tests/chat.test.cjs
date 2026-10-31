@@ -113,7 +113,8 @@ test("history reads all pages oldest first and caches the completed result", asy
   await app.dispatch(loadConversations(0));
   const offsets = [];
   apiClient.defaults.adapter = async (config) => {
-    assert.equal(config.url, `/conversations/${id}/messages`);
+    assert.equal(config.url, "/messages");
+    assert.equal(config.params.conversation_id, id);
     const offset = config.params.offset;
     offsets.push(offset);
     return jsonResponse(config, { messages: [{ id: String(offset), role: "user", content: `page ${offset}`, created_at: date }], pagination: { offset, limit: 50, has_more: offset === 0 } });
@@ -138,7 +139,7 @@ test("new chat never sends a temporary ID, adopts the server ID and replaces the
   const app = store();
   const requests = [];
   globalThis.fetch = async (url, options) => {
-    assert.equal(url, "http://localhost:3001/api/conversations/send-messages");
+    assert.equal(url, "http://localhost:3001/api/chat");
     assert.equal(options.headers.Authorization, "Bearer backend-jwt");
     requests.push(JSON.parse(options.body));
     return response(conversationFrame + frame("delta", { text: "partial" }) + doneFrame);
