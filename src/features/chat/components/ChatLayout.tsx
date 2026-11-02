@@ -7,6 +7,7 @@ import { SettingsDialog } from "../../settings/components/SettingsDialog";
 import { useAuth } from "../../auth/useAuth";
 import { LoginDialog } from "../../auth/components/LoginDialog";
 import { useChat } from "../useChat";
+import { ConversationActions } from "./ConversationActions";
 
 export function ChatLayout() {
   const chat = useChat();
@@ -25,13 +26,15 @@ export function ChatLayout() {
           onLogout={() => { chat.stop(); logout(); }}
           busy={chat.isSending} loading={chat.list.loading} hasMore={chat.list.hasMore}
           error={chat.list.error} onLoadMore={chat.loadMore} onReload={chat.reload}
+          mutations={chat.mutations} onRename={chat.rename} onDelete={chat.remove}
         />
         <main className="flex min-w-0 flex-1 flex-col bg-white dark:bg-[#0f1520]">
           <div className="flex shrink-0 items-center justify-between gap-2 border-b border-slate-200 px-4 py-2 md:hidden dark:border-slate-700">
             <Button onClick={chat.newChat} disabled={chat.isSending}>New Chat</Button>
             {user ? <Button onClick={() => { chat.stop(); logout(); }}>Logout</Button> : <Button onClick={openLogin}>Login</Button>}
           </div>
-          <ChatHeader title={chat.activeConversation?.title ?? "New Chat"} onExit={chat.newChat} disabled={chat.isSending} />
+          <ChatHeader title={chat.activeConversation?.title ?? "New Chat"} onExit={chat.newChat} disabled={chat.isSending}
+            actions={chat.activeConversation && <ConversationActions conversation={chat.activeConversation} busy={Boolean(chat.mutations[chat.activeConversation.id])} onRename={chat.rename} onDelete={chat.remove} />} />
           <ChatContent chat={chat} signedIn={Boolean(user)} onLogin={openLogin} />
         </main>
       </div>

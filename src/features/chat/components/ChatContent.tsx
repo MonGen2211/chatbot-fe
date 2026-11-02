@@ -17,8 +17,7 @@ export function ChatContent({ chat, signedIn, onLogin }: ChatContentProps) {
   const message = composer.id === chat.activeId ? composer.text : "";
   const scroller = useRef<HTMLDivElement>(null);
   const follow = useRef(true);
-  const historyReady = !chat.activeId || Boolean(chat.historyState?.loaded);
-  const disabled = !signedIn || chat.isSending || !historyReady;
+  const disabled = !signedIn || !chat.canSend;
 
   useEffect(() => {
     if (follow.current && scroller.current) scroller.current.scrollTop = scroller.current.scrollHeight;
@@ -49,7 +48,7 @@ export function ChatContent({ chat, signedIn, onLogin }: ChatContentProps) {
           </div>
         )}
         {chat.messages.length ? chat.messages.map((item) => (
-          <ChatMessage key={item.id} message={item} busy={chat.isSending} onEdit={chat.editMessage} />
+          <ChatMessage key={item.id} message={item} busy={chat.isSending} onEdit={chat.editMessage} onRetry={chat.retryAssistant} onRefresh={chat.retryHistory} />
         )) : !chat.historyState?.loading && !chat.historyState?.error && (
           <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">
             <SmartToyOutlinedIcon className="mb-3 text-4xl text-blue-600 dark:text-blue-400" />

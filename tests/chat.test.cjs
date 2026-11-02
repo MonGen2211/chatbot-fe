@@ -22,7 +22,8 @@ const { apiClient, setAccessToken, setUnauthorizedHandler } = require("../src/ap
 const { authService } = require("../src/features/auth/authService.ts");
 const { readSession, saveSession } = require("../src/features/auth/authStorage.ts");
 const { default: auth, authenticate, logout } = require("../src/features/auth/authSlice.ts");
-const { default: chat, loadConversations, loadMessages, sendChatMessage, clearActiveConversation, selectConversation } = require("../src/features/chat/chatSlice.ts");
+const { default: chat, loadConversations, loadMessages, sendChatMessage, clearActiveConversation, selectConversation,
+  changeChatMessage, renameConversation, deleteConversation, receiveStreamEvent, detachStream } = require("../src/features/chat/chatSlice.ts");
 const { streamMessage } = require("../src/features/chat/chatService.ts");
 const originalFetch = globalThis.fetch;
 const originalAdapter = apiClient.defaults.adapter;
@@ -153,7 +154,9 @@ test("new chat never sends a temporary ID, adopts the server ID and replaces the
     ["saved-user", "Hello", "completed"], ["saved-assistant", "Xin chào bạn!", "completed"],
   ]);
   await app.dispatch(sendChatMessage("Follow up"));
-  assert.deepEqual(requests, [{ message: "Hello" }, { conversation_id: id, message: "Follow up" }]);
+  for (const request of requests) assert.match(request.message_id, /^[0-9a-f-]{36}$/);
+  assert.notEqual(requests[0].message_id, requests[1].message_id);
+  assert.deepEqual(requests.map(({ message_id, ...body }) => body), [{ message: "Hello" }, { conversation_id: id, message: "Follow up" }]);
 });
 
 test("HTTP 200 without done preserves partial text and marks it interrupted", async () => {
@@ -265,4 +268,176 @@ test("late history/list results after logout cannot restore the previous user's 
   finish();
   await task;
   assert.equal(app.getState().chat.conversations.length, 0);
+});
+
+const userMessage = (n, content = `User ${n}`) => ({ id: `u${n}`, role: "user", content, created_at: date, status: "completed" });
+const aiMessage = (n, status = "completed") => ({ id: `a${n}`, role: "assistant", content: status === "completed" ? `AI ${n}` : "", created_at: date, status });
+async function seeded(messages) {
+  const app = store();
+  apiClient.defaults.adapter = async (config) => jsonResponse(config, config.url === "/conversations"
+    ? { conversations: [row()], pagination: { limit: 50, offset: 0, has_more: false } }
+    : { messages, pagination: { limit: 50, offset: 0, has_more: false } });
+  await app.dispatch(loadConversations(0));
+  app.dispatch(selectConversation(id));
+  await app.dispatch(loadMessages(id));
+  return app;
+}
+const operationFrame = (user, assistant, deleted = []) => frame("conversation", {
+  conversation_id: id, created: false, user_message_id: user.id,
+  user_message: user, assistant_message: assistant, deleted_message_ids: deleted,
+});
+const operationDone = (user, assistant, deleted = []) => frame("done", {
+  success: true, conversation_id: id, user_message: user, message: assistant, deleted_message_ids: deleted,
+});
+
+test("rename uses PATCH and the returned title; a failed mutation keeps the original data", async () => {
+  const app = await seeded([]);
+  apiClient.defaults.adapter = async (config) => {
+    assert.equal(config.method, "patch");
+    assert.equal(config.url, `/conversations/${id}`);
+    assert.equal(config.headers.Authorization, "Bearer backend-jwt");
+    assert.deepEqual(JSON.parse(config.data), { title: "New title" });
+    return jsonResponse(config, { conversation: { ...row(), title: "Server title" } });
+  };
+  await app.dispatch(renameConversation({ id, title: " New title " }));
+  assert.equal(app.getState().chat.conversations[0].title, "Server title");
+  const invalid = await app.dispatch(renameConversation({ id, title: "  " }));
+  assert.equal(invalid.meta.condition, true);
+  apiClient.defaults.adapter = async (config) => { throw new AxiosError("Forbidden", "ERR_BAD_REQUEST", config, null, { status: 404, data: { message: "Not found" } }); };
+  const failed = await app.dispatch(renameConversation({ id, title: "Other title" }));
+  assert.equal(failed.payload, "Not found");
+  assert.equal(app.getState().chat.conversations[0].title, "Server title");
+});
+
+test("Retry posts without body, resets partial text, keeps the same assistant ID and prevents double click", async () => {
+  const app = await seeded([userMessage(1), aiMessage(1, "failed")]);
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    assert.equal(url, "http://localhost:3001/api/chat/messages/a1/retry");
+    assert.equal(options.method, "POST");
+    assert.equal(options.body, undefined);
+    return response(operationFrame(userMessage(1), aiMessage(1, "pending")) +
+      frame("delta", { text: "Old partial" }) + frame("reset", { assistant_message_id: "a1", attempt: 2 }) +
+      frame("delta", { text: "New answer" }) + operationDone(userMessage(1), { ...aiMessage(1), content: "New answer" }));
+  };
+  const snapshots = [];
+  const unsubscribe = app.subscribe(() => snapshots.push(app.getState().chat.conversations[0].messages[1].content));
+  const task = app.dispatch(changeChatMessage({ kind: "retry", id: "a1" }));
+  const duplicate = await app.dispatch(changeChatMessage({ kind: "retry", id: "a1" }));
+  assert.equal(duplicate.meta.condition, true);
+  await task; unsubscribe();
+  assert.equal(calls, 1);
+  const messages = app.getState().chat.conversations[0].messages;
+  assert.equal(messages.length, 2);
+  assert.equal(messages[1].id, "a1");
+  assert.equal(messages[1].status, "completed");
+  assert.equal(messages[1].content, "New answer");
+  assert.ok(snapshots.includes("Old partial"));
+  assert.ok(!snapshots.includes("Old partialNew answer"));
+  const invalidRetry = await app.dispatch(changeChatMessage({ kind: "retry", id: "a1" }));
+  assert.equal(invalidRetry.meta.condition, true);
+});
+
+test("done with failed assistant is a successful operation, preserves the user and blocks a new send", async () => {
+  const app = store();
+  let calls = 0;
+  globalThis.fetch = async () => { calls++; return response(operationFrame(userMessage(1), aiMessage(1, "pending")) + operationDone(userMessage(1), aiMessage(1, "failed"))); };
+  const result = await app.dispatch(sendChatMessage("Hello"));
+  assert.equal(sendChatMessage.fulfilled.match(result), true);
+  const state = app.getState().chat;
+  assert.equal(state.stream, null);
+  assert.equal(state.sendError, null);
+  assert.deepEqual(state.conversations[0].messages.map((item) => [item.id, item.status]), [["u1", "completed"], ["a1", "failed"]]);
+  const blocked = await app.dispatch(sendChatMessage("Another message"));
+  assert.equal(blocked.meta.condition, true);
+  assert.equal(calls, 1);
+});
+
+test("Edit PATCH replaces the user, removes every deleted message and inserts only the new assistant", async () => {
+  const app = await seeded([userMessage(1), aiMessage(1), userMessage(2), aiMessage(2)]);
+  const edited = { ...userMessage(1, "Edited user message"), is_edited: true };
+  const deleted = ["a1", "u2", "a2"];
+  let calls = 0;
+  globalThis.fetch = async (url, options) => {
+    calls++;
+    assert.equal(url, "http://localhost:3001/api/chat/messages/u1");
+    assert.equal(options.method, "PATCH");
+    assert.deepEqual(JSON.parse(options.body), { message: "Edited user message" });
+    return response(operationFrame(edited, aiMessage(3, "pending"), deleted) + frame("delta", { text: "New" }) + operationDone(edited, aiMessage(3), deleted));
+  };
+  await app.dispatch(changeChatMessage({ kind: "edit", id: "u1", message: " Edited user message " }));
+  const state = app.getState().chat;
+  assert.equal(calls, 1);
+  assert.deepEqual(state.conversations[0].messages.map((item) => item.id), ["u1", "a3"]);
+  assert.equal(state.conversations[0].messages[0].content, "Edited user message");
+  assert.equal(state.conversations[0].messages[0].isEdited, true);
+  assert.equal(state.history[id].loaded, true);
+});
+
+test("HTTP 409 before retry SSE keeps the failed record, without a placeholder or duplicate", async () => {
+  const app = await seeded([userMessage(1), aiMessage(1, "failed")]);
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Already processing", code: "conflict" }), { status: 409 });
+  const result = await app.dispatch(changeChatMessage({ kind: "retry", id: "a1" }));
+  assert.equal(result.payload, "Already processing");
+  const state = app.getState().chat;
+  assert.equal(state.stream, null);
+  assert.equal(state.conversations[0].messages.length, 2);
+  assert.equal(state.conversations[0].messages[1].status, "failed");
+});
+
+test("an Edit rejected with 404 preserves all original messages and their contents", async () => {
+  const app = await seeded([userMessage(1), aiMessage(1), userMessage(2), aiMessage(2)]);
+  const original = app.getState().chat.conversations[0].messages;
+  globalThis.fetch = async () => new Response(JSON.stringify({ message: "Not found", code: "not_found" }), { status: 404 });
+  const result = await app.dispatch(changeChatMessage({ kind: "edit", id: "u1", message: "Updated" }));
+  assert.equal(result.payload, "Not found");
+  assert.deepEqual(app.getState().chat.conversations[0].messages, original);
+  assert.equal(app.getState().chat.stream, null);
+});
+
+test("superseded ends the stream, invalidates history and ignores buffered text/done", async () => {
+  const app = await seeded([userMessage(1), aiMessage(1, "failed")]);
+  globalThis.fetch = async () => response(operationFrame(userMessage(1), aiMessage(1, "pending")) +
+    frame("superseded", { assistant_message_id: "a1" }) + frame("delta", { text: "Stale" }) + operationDone(userMessage(1), aiMessage(1)));
+  await app.dispatch(changeChatMessage({ kind: "retry", id: "a1" }));
+  const state = app.getState().chat;
+  assert.equal(state.stream, null);
+  assert.equal(state.history[id], undefined);
+  assert.deepEqual(state.conversations[0].messages.map((item) => item.id), ["u1"]);
+});
+
+test("deleting the active conversation removes its cache and ignores late streams and stale list snapshots", async () => {
+  const app = await seeded([userMessage(1), aiMessage(1, "failed")]);
+  app.dispatch(changeChatMessage.pending("old-stream", { kind: "retry", id: "a1" }));
+  apiClient.defaults.adapter = async (config) => {
+    if (config.method === "delete") {
+      assert.equal(config.url, `/conversations/${id}`);
+      assert.equal(config.data, undefined);
+      return jsonResponse(config, { conversation_id: id, deleted_message_ids: ["u1", "a1"] });
+    }
+    return jsonResponse(config, { conversations: [row()], pagination: { offset: 0, limit: 50, has_more: false } });
+  };
+  await app.dispatch(deleteConversation(id));
+  app.dispatch(receiveStreamEvent({ requestId: "old-stream", event: { event: "done", data: { conversation_id: id, message: aiMessage(1) } } }));
+  await app.dispatch(loadConversations(0));
+  const state = app.getState().chat;
+  assert.equal(state.stream, null);
+  assert.equal(state.activeId, null);
+  assert.equal(state.history[id], undefined);
+  assert.equal(state.conversations.length, 0);
+  assert.equal(state.draft.length, 0);
+});
+
+test("an edit supersedes the old generation and late events cannot restore removed messages", async () => {
+  const app = await seeded([userMessage(1), aiMessage(1, "pending"), userMessage(2), aiMessage(2)]);
+  app.dispatch(changeChatMessage.pending("old-stream", { kind: "retry", id: "a1" }));
+  app.dispatch(detachStream());
+  const edited = { ...userMessage(1, "Updated"), is_edited: true };
+  globalThis.fetch = async () => response(operationFrame(edited, aiMessage(3, "pending"), ["a1", "u2", "a2"]) + operationDone(edited, aiMessage(3), ["a1", "u2", "a2"]));
+  const task = app.dispatch(changeChatMessage({ kind: "edit", id: "u1", message: "Updated" }));
+  app.dispatch(receiveStreamEvent({ requestId: "old-stream", event: { event: "delta", data: { text: "stale" } } }));
+  await task;
+  app.dispatch(receiveStreamEvent({ requestId: "old-stream", event: { event: "done", data: { conversation_id: id, message: aiMessage(1) } } }));
+  assert.deepEqual(app.getState().chat.conversations[0].messages.map((item) => item.id), ["u1", "a3"]);
 });

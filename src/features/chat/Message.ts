@@ -3,5 +3,7 @@ export interface Message {
   role: "user" | "assistant";
   content: string;
   createdAt: string;
-  status?: "completed" | "streaming" | "interrupted" | "failed";
+  status?: "pending" | "completed" | "streaming" | "interrupted" | "failed";
+  isEdited?: boolean;
+  persisted?: boolean;
 }
