@@ -25,11 +25,26 @@ interface ApiConversation {
 }
 interface ApiMessage {
   id: string; role: Message["role"]; content: string; created_at: string;
+  status?: "pending" | "completed" | "failed";
+  is_edited?: boolean;
 }
 export const toMessage = (row: ApiMessage): Message => ({
-  id: row.id, role: row.role, content: row.content, createdAt: row.created_at, status: "completed",
+  id: row.id, role: row.role, content: row.content, createdAt: row.created_at,
+  status: row.status ?? "completed", isEdited: row.is_edited ?? false, persisted: true,
 });
 export const chatService = {
+  async rename(id: string, title: string, signal: AbortSignal) {
+    const { data: { data } } = await apiClient.patch<{ data: { conversation: ApiConversation } }>(
+      `/conversations/${encodeURIComponent(id)}`, { title }, { signal },
+    );
+    return data.conversation;
+  },
+  async remove(id: string, signal: AbortSignal) {
+    const { data: { data } } = await apiClient.delete<{ data: { conversation_id: string; deleted_message_ids: string[] } }>(
+      `/conversations/${encodeURIComponent(id)}`, { signal },
+    );
+    return data;
+  },
   async conversations(offset: number, signal: AbortSignal) {
     const { data: { data } } = await apiClient.get<{ data: { conversations: ApiConversation[]; pagination: Pagination } }>(
       "/conversations", { params: { limit: PAGE_SIZE, offset }, signal },
@@ -47,16 +62,35 @@ export const chatService = {
   },
 };
 
+interface OperationData {
+  user_message?: ApiMessage;
+  assistant_message?: ApiMessage;
+  deleted_message_ids?: string[];
+}
 export type ChatEvent =
-  | { event: "conversation"; data: { conversation_id: string; created: boolean; user_message_id: string } }
+  | { event: "conversation"; data: OperationData & { conversation_id: string; created?: boolean; user_message_id?: string } }
   | { event: "delta"; data: { text: string } }
-  | { event: "done"; data: { conversation_id: string; message: ApiMessage } };
+  | { event: "reset"; data: { assistant_message_id: string; attempt?: number } }
+  | { event: "superseded"; data: { assistant_message_id: string } }
+  | { event: "done"; data: OperationData & { conversation_id: string; message: ApiMessage } };
 
 export async function streamMessage(token: string, message: string, conversationId: string | null, onEvent: (event: ChatEvent) => void, signal: AbortSignal) {
-  const response = await fetch(`${API_URL.replace(/\/$/, "")}/api/chat`, {
-    method: "POST", signal,
+  return streamOperation(token, "/chat", "POST", { message_id: crypto.randomUUID(), message, ...(conversationId && { conversation_id: conversationId }) }, onEvent, signal);
+}
+
+export function retryMessage(token: string, id: string, onEvent: (event: ChatEvent) => void, signal: AbortSignal) {
+  return streamOperation(token, `/chat/messages/${encodeURIComponent(id)}/retry`, "POST", undefined, onEvent, signal);
+}
+
+export function editMessage(token: string, id: string, message: string, onEvent: (event: ChatEvent) => void, signal: AbortSignal) {
+  return streamOperation(token, `/chat/messages/${encodeURIComponent(id)}`, "PATCH", { message }, onEvent, signal);
+}
+
+async function streamOperation(token: string, path: string, method: string, body: object | undefined, onEvent: (event: ChatEvent) => void, signal: AbortSignal) {
+  const response = await fetch(`${API_URL.replace(/\/$/, "")}/api${path}`, {
+    method, signal,
     headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ message, ...(conversationId && { conversation_id: conversationId }) }),
+    ...(body && { body: JSON.stringify(body) }),
   });
   if (!response.ok) {
     if (response.status === 401) handleUnauthorized();
@@ -82,11 +116,11 @@ export async function streamMessage(token: string, message: string, conversation
         if (!event || !raw) continue;
         const data = JSON.parse(raw);
         if (event === "error") throw new Error(data.message || "Câu trả lời bị gián đoạn.");
-        if (event === "conversation" || event === "delta" || event === "done") {
+        if (event === "conversation" || event === "delta" || event === "done" || event === "reset" || event === "superseded") {
           if (event === "delta") await waitForDelta(signal);
           signal.throwIfAborted();
           onEvent({ event, data } as ChatEvent);
-          if (event === "done") { completed = true; break; }
+          if (event === "done" || event === "superseded") { completed = true; break; }
         }
       }
       if (done) break;

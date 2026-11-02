@@ -4,7 +4,7 @@ import { authenticate, logout } from "../auth/authSlice";
 import type { AuthSession } from "../auth/types";
 import type { Conversation } from "./Conservation";
 import type { Message } from "./Message";
-import { chatService, streamMessage, toMessage, type ChatEvent } from "./chatService";
+import { chatService, streamMessage, retryMessage, editMessage, toMessage, type ChatEvent } from "./chatService";
 
 interface ChatState {
   conversations: Conversation[];
@@ -12,11 +12,13 @@ interface ChatState {
   draft: Message[];
   list: { loading: boolean; offset: number; hasMore: boolean; error: string | null; requestId: string | null };
   history: Record<string, { loading: boolean; loaded: boolean; error: string | null; requestId: string | null }>;
-  stream: { requestId: string; conversationId: string | null; confirmed: boolean } | null;
+  stream: { requestId: string; conversationId: string | null; confirmed: boolean; assistantId: string; kind: "send" | "retry" | "edit" } | null;
+  mutations: Record<string, string>;
+  deletedConversations: Record<string, boolean>;
   sendError: string | null;
 }
 const initialState: ChatState = {
-  conversations: [], activeId: null, draft: [], history: {}, stream: null, sendError: null,
+  conversations: [], activeId: null, draft: [], history: {}, stream: null, sendError: null, mutations: {}, deletedConversations: {},
   list: { loading: false, offset: 0, hasMore: false, error: null, requestId: null },
 };
 type ThunkConfig = { state: { chat: ChatState; auth: { session: AuthSession | null } }; rejectValue: string };
@@ -60,9 +62,41 @@ export const sendChatMessage = createAsyncThunk<void, string, ThunkConfig>(
     condition: (message, { getState }) => {
       const { chat, auth } = getState();
       return Boolean(auth.session) && !chat.stream && Boolean(message.trim()) && message.length <= 12000 &&
-        (!chat.activeId || Boolean(chat.history[chat.activeId]?.loaded));
+        (!chat.activeId || (Boolean(chat.history[chat.activeId]?.loaded) && !chat.mutations[chat.activeId] &&
+          !chat.conversations.find((item) => item.id === chat.activeId)?.messages.some((item) => item.role === "assistant" && ["pending", "failed", "interrupted"].includes(item.status || ""))));
     },
   },
+);
+
+export const renameConversation = createAsyncThunk<Awaited<ReturnType<typeof chatService.rename>>, { id: string; title: string }, ThunkConfig>(
+  "chat/rename", async ({ id, title }, { signal, rejectWithValue }) => {
+    try { return await chatService.rename(id, title.trim(), signal); }
+    catch (error) { return rejectWithValue(getApiError(error)); }
+  }, { condition: ({ id, title }, { getState }) => Boolean(getState().auth.session) && !getState().chat.mutations[id] && Boolean(title.trim()) && title.trim().length <= 200 },
+);
+export const deleteConversation = createAsyncThunk<Awaited<ReturnType<typeof chatService.remove>>, string, ThunkConfig>(
+  "chat/delete", async (id, { signal, rejectWithValue }) => {
+    try { return await chatService.remove(id, signal); }
+    catch (error) { return rejectWithValue(getApiError(error)); }
+  }, { condition: (id, { getState }) => Boolean(getState().auth.session) && !getState().chat.mutations[id] },
+);
+export const changeChatMessage = createAsyncThunk<void, { kind: "retry" | "edit"; id: string; message?: string }, ThunkConfig>(
+  "chat/changeMessage", async (input, { getState, dispatch, signal, requestId, rejectWithValue }) => {
+    const token = getState().auth.session?.accessToken;
+    if (!token) return rejectWithValue("Vui lòng đăng nhập lại.");
+    const onEvent = (event: ChatEvent) => dispatch(receiveStreamEvent({ requestId, event }));
+    try {
+      if (input.kind === "retry") await retryMessage(token, input.id, onEvent, signal);
+      else await editMessage(token, input.id, input.message!.trim(), onEvent, signal);
+    } catch (error) { return rejectWithValue(getApiError(error)); }
+  }, { condition: (input, { getState }) => {
+    const { chat, auth } = getState();
+    const conversation = chat.conversations.find((item) => item.id === chat.activeId);
+    const message = conversation?.messages.find((item) => item.id === input.id);
+    return Boolean(auth.session) && !chat.stream && !chat.mutations[chat.activeId || ""] && Boolean(message?.persisted) &&
+      (input.kind === "retry" ? message?.role === "assistant" && message.status === "failed" :
+        message?.role === "user" && Boolean(input.message?.trim()) && input.message!.trim().length <= 12000);
+  } },
 );
 
 function streamMessages(state: ChatState) {
@@ -73,19 +107,33 @@ function streamMessages(state: ChatState) {
 function sortConversations(state: ChatState) {
   state.conversations.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
 }
+function upsertMessage(messages: Message[], message: Message, placeholderId?: string) {
+  let index = messages.findIndex((item) => item.id === message.id);
+  if (index >= 0) {
+    messages[index] = message;
+    if (placeholderId && placeholderId !== message.id) {
+      const placeholder = messages.findIndex((item) => item.id === placeholderId);
+      if (placeholder >= 0) messages.splice(placeholder, 1);
+    }
+  } else {
+    index = messages.findIndex((item) => item.id === placeholderId);
+    if (index >= 0) messages[index] = message;
+    else messages.push(message);
+  }
+}
+function interruptStream(state: ChatState) {
+  const assistant = streamMessages(state)?.find((item) => item.id === state.stream?.assistantId);
+  if (assistant && ["pending", "streaming"].includes(assistant.status || "")) assistant.status = "interrupted";
+  state.stream = null;
+}
 
 const chatSlice = createSlice({
   name: "chat", initialState,
   reducers: {
-    editMessageLocally(state, { payload }: PayloadAction<{ conversationId: string | null; messageId: string; content: string }>) {
-      if (state.stream || state.activeId !== payload.conversationId) return;
-      const content = payload.content.trim();
-      if (!content || content.length > 12000) return;
-      const messages = payload.conversationId
-        ? state.conversations.find((item) => item.id === payload.conversationId)?.messages
-        : state.draft;
-      const message = messages?.find((item) => item.id === payload.messageId && item.role === "user");
-      if (message) message.content = content;
+    detachStream(state) { interruptStream(state); },
+    invalidateHistory(state, action: PayloadAction<string>) {
+      delete state.history[action.payload];
+      if (state.activeId === action.payload) state.sendError = null;
     },
     clearActiveConversation(state) {
       if (state.stream) return;
@@ -99,6 +147,15 @@ const chatSlice = createSlice({
       if (state.stream?.requestId !== payload.requestId) return;
       const { event } = payload;
       const now = new Date().toISOString();
+      if (event.event === "superseded") {
+        const id = state.stream.conversationId;
+        const messages = streamMessages(state);
+        const index = messages?.findIndex((item) => item.id === state.stream?.assistantId) ?? -1;
+        if (messages && index >= 0) messages.splice(index, 1);
+        state.stream = null;
+        if (id) delete state.history[id];
+        return;
+      }
       if (event.event === "conversation") {
         const id = event.data.conversation_id;
         if (!state.stream.conversationId) {
@@ -112,19 +169,37 @@ const chatSlice = createSlice({
         state.stream.conversationId = id;
         state.stream.confirmed = true;
         state.activeId = id;
+        state.history[id] = { loaded: true, loading: false, error: null, requestId: null };
         const messages = streamMessages(state);
-        const user = messages?.find((item) => item.id === `${payload.requestId}-user`);
-        if (user) { user.id = event.data.user_message_id; user.status = "completed"; }
+        if (messages) {
+          const deleted = new Set(event.data.deleted_message_ids || []);
+          for (let index = messages.length - 1; index >= 0; index--) if (deleted.has(messages[index].id)) messages.splice(index, 1);
+          if (event.data.user_message) upsertMessage(messages, toMessage(event.data.user_message), `${payload.requestId}-user`);
+          else {
+            const user = messages.find((item) => item.id === `${payload.requestId}-user`);
+            if (user && event.data.user_message_id) { user.id = event.data.user_message_id; user.status = "completed"; user.persisted = true; }
+          }
+          if (event.data.assistant_message) {
+            upsertMessage(messages, toMessage(event.data.assistant_message), state.stream.assistantId);
+            state.stream.assistantId = event.data.assistant_message.id;
+          }
+        }
         const conversation = state.conversations.find((item) => item.id === id);
         if (conversation) conversation.updatedAt = now;
         sortConversations(state);
       } else {
         const messages = streamMessages(state);
-        const assistant = messages?.find((item) => item.id === `${payload.requestId}-assistant`);
-        if (!assistant) return;
-        if (event.event === "delta") assistant.content += event.data.text;
-        else {
-          Object.assign(assistant, toMessage(event.data.message));
+        const assistant = messages?.find((item) => item.id === state.stream?.assistantId);
+        if (event.event === "delta") { if (assistant) assistant.content += event.data.text; }
+        else if (event.event === "reset") {
+          if (assistant && assistant.id === event.data.assistant_message_id) assistant.content = "";
+        } else if (event.event === "done") {
+          if (messages) {
+            const deleted = new Set(event.data.deleted_message_ids || []);
+            for (let index = messages.length - 1; index >= 0; index--) if (deleted.has(messages[index].id)) messages.splice(index, 1);
+            if (event.data.user_message) upsertMessage(messages, toMessage(event.data.user_message), `${payload.requestId}-user`);
+            upsertMessage(messages, toMessage(event.data.message), state.stream.assistantId);
+          }
           const conversation = state.conversations.find((item) => item.id === state.stream?.conversationId);
           if (conversation) conversation.updatedAt = event.data.message.created_at;
           state.stream = null;
@@ -137,6 +212,35 @@ const chatSlice = createSlice({
     builder
       .addCase(logout, () => initialState)
       .addCase(authenticate.fulfilled, () => initialState)
+      .addCase(renameConversation.pending, (state, action) => { state.mutations[action.meta.arg.id] = action.meta.requestId; })
+      .addCase(renameConversation.fulfilled, (state, action) => {
+        if (state.mutations[action.meta.arg.id] !== action.meta.requestId) return;
+        delete state.mutations[action.meta.arg.id];
+        const conversation = state.conversations.find((item) => item.id === action.payload.id);
+        if (conversation) { conversation.title = action.payload.title; conversation.updatedAt = action.payload.updated_at; }
+        state.list.requestId = null; state.list.loading = false;
+        sortConversations(state);
+      })
+      .addCase(renameConversation.rejected, (state, action) => {
+        if (state.mutations[action.meta.arg.id] === action.meta.requestId) delete state.mutations[action.meta.arg.id];
+      })
+      .addCase(deleteConversation.pending, (state, action) => {
+        state.mutations[action.meta.arg] = action.meta.requestId;
+        if (state.stream?.conversationId === action.meta.arg) interruptStream(state);
+      })
+      .addCase(deleteConversation.fulfilled, (state, action) => {
+        const id = action.meta.arg;
+        if (state.mutations[id] !== action.meta.requestId) return;
+        delete state.mutations[id]; delete state.history[id];
+        state.deletedConversations[id] = true;
+        state.conversations = state.conversations.filter((item) => item.id !== id);
+        if (state.activeId === id) { state.activeId = null; state.draft = []; state.sendError = null; }
+        state.list.requestId = null; state.list.loading = false;
+        state.list.offset = Math.max(0, state.list.offset - 1);
+      })
+      .addCase(deleteConversation.rejected, (state, action) => {
+        if (state.mutations[action.meta.arg] === action.meta.requestId) delete state.mutations[action.meta.arg];
+      })
       .addCase(loadConversations.pending, (state, action) => {
         state.list.loading = true; state.list.error = null; state.list.requestId = action.meta.requestId;
       })
@@ -144,6 +248,7 @@ const chatSlice = createSlice({
         if (state.list.requestId !== action.meta.requestId) return;
         const { conversations, pagination } = action.payload;
         for (const row of conversations) {
+          if (state.deletedConversations[row.id]) continue;
           const existing = state.conversations.find((item) => item.id === row.id);
           if (existing) Object.assign(existing, { ...row, updatedAt: row.updatedAt > existing.updatedAt ? row.updatedAt : existing.updatedAt, messages: existing.messages });
           else state.conversations.push(row);
@@ -173,20 +278,27 @@ const chatSlice = createSlice({
       })
       .addCase(sendChatMessage.pending, (state, action) => {
         state.sendError = null;
-        state.stream = { requestId: action.meta.requestId, conversationId: state.activeId, confirmed: false };
+        state.stream = { requestId: action.meta.requestId, conversationId: state.activeId, confirmed: false, kind: "send", assistantId: `${action.meta.requestId}-assistant` };
         const now = new Date().toISOString();
         const messages: Message[] = [
-          { id: `${action.meta.requestId}-user`, role: "user", content: action.meta.arg, createdAt: now, status: "completed" },
-          { id: `${action.meta.requestId}-assistant`, role: "assistant", content: "", createdAt: now, status: "streaming" },
+          { id: `${action.meta.requestId}-user`, role: "user", content: action.meta.arg, createdAt: now, status: "completed", persisted: false },
+          { id: `${action.meta.requestId}-assistant`, role: "assistant", content: "", createdAt: now, status: "streaming", persisted: false },
         ];
         if (state.activeId) streamMessages(state)?.push(...messages);
         else state.draft = messages;
       })
-      .addCase(sendChatMessage.rejected, (state, action) => {
+      .addCase(changeChatMessage.pending, (state, action) => {
+        state.sendError = null;
+        state.stream = { requestId: action.meta.requestId, conversationId: state.activeId, confirmed: false,
+          kind: action.meta.arg.kind, assistantId: action.meta.arg.kind === "retry" ? action.meta.arg.id : "" };
+        if (state.activeId && state.history[state.activeId]) state.history[state.activeId].requestId = null;
+      })
+      .addMatcher((action): action is ReturnType<typeof sendChatMessage.rejected> | ReturnType<typeof changeChatMessage.rejected> =>
+        sendChatMessage.rejected.match(action) || changeChatMessage.rejected.match(action), (state, action) => {
         if (state.stream?.requestId !== action.meta.requestId) return;
         const messages = streamMessages(state);
-        const assistant = messages?.find((item) => item.id === `${action.meta.requestId}-assistant`);
-        if (assistant) assistant.status = "interrupted";
+        const assistant = messages?.find((item) => item.id === state.stream?.assistantId);
+        if (assistant && (state.stream.confirmed || state.stream.kind === "send")) assistant.status = "interrupted";
         if (!state.stream.confirmed) {
           const user = messages?.find((item) => item.id === `${action.meta.requestId}-user`);
           if (user) user.status = "failed";
@@ -197,5 +309,5 @@ const chatSlice = createSlice({
   },
 });
 
-export const { clearActiveConversation, selectConversation, receiveStreamEvent, editMessageLocally } = chatSlice.actions;
+export const { clearActiveConversation, selectConversation, receiveStreamEvent, detachStream, invalidateHistory } = chatSlice.actions;
 export default chatSlice.reducer;

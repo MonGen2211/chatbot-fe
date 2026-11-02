@@ -14,6 +14,7 @@ import {
   Tooltip,
 } from "@mui/material";
 import type { User } from "../../auth/types";
+import { ConversationActions } from "./ConversationActions";
 
 export interface ChatItem {
   id: string;
@@ -35,6 +36,9 @@ interface ChatSidebarProps {
   error: string | null;
   onLoadMore: () => void;
   onReload: () => void;
+  mutations: Record<string, string>;
+  onRename: (id: string, title: string) => Promise<boolean>;
+  onDelete: (id: string) => Promise<boolean>;
 }
 
 export function ChatSidebar({
@@ -47,6 +51,7 @@ export function ChatSidebar({
   onOpenLogin,
   onLogout,
   busy, loading, hasMore, error, onLoadMore, onReload,
+  mutations, onRename, onDelete,
 }: ChatSidebarProps) {
   return (
     <aside className="hidden w-[280px] shrink-0 flex-col bg-[#18202c] p-4 text-slate-200 md:flex dark:border-r dark:border-white/5 dark:bg-[#0b111a]">
@@ -74,12 +79,12 @@ export function ChatSidebar({
         {chats.map((chat) => {
           const active = chat.id === activeId;
           return (
+            <div key={chat.id} className={`flex items-center rounded-lg ${active ? "bg-[#2d394b]" : "hover:bg-white/5"}`}>
             <ListItemButton
-              key={chat.id}
               selected={active}
               onClick={() => onSelect(chat.id)}
-              disabled={busy}
-              className={`rounded-lg px-2.5 py-2 ${
+              disabled={busy || Boolean(mutations[chat.id])}
+              className={`min-w-0 flex-1 rounded-lg px-2.5 py-2 ${
                 active
                   ? "bg-[#2d394b] text-white"
                   : "text-slate-300 hover:bg-white/5"
@@ -90,6 +95,8 @@ export function ChatSidebar({
                 slotProps={{ primary: { className: "text-[13px] truncate" } }}
               />
             </ListItemButton>
+            <ConversationActions conversation={chat} busy={Boolean(mutations[chat.id])} onRename={onRename} onDelete={onDelete} />
+            </div>
           );
         })}
       </List>
